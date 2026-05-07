@@ -2,15 +2,21 @@ import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import "./styles.css";
 
-import { resolveMapboxToken, getMapStyle, mapView } from "./mapConfig.js";
+import {
+  resolveMapboxToken,
+  createNeonBasemapStyle,
+  getMapStyleRef,
+  mapView,
+  DEFAULT_NEON_LAND,
+} from "./mapConfig.js";
 
 /**
- * Target look (right ref): deep purple nebula land (#2e004f · #6000a0 wisps),
- * luminous cyan water, cool gray roads w/ dark outline + soft bloom,
- * pale gray/lavender buildings w/ charcoal outline — not neon purple slabs.
+ * Custom neon cartography on a minimal programmatic basemap (see `createNeonBasemapStyle`).
+ * Deep purple nebula land, luminous cyan water, gray roads + casings, pale buildings — not violet slabs.
+ * Default land hue: `DEFAULT_NEON_LAND` in mapConfig.js.
  */
 const NEON = {
-  land: "#2e004f",
+  land: DEFAULT_NEON_LAND,
   landUrban: "#3b0868",
   nebulaPurple: "rgba(106, 13, 173, 0.38)",
   nebulaPurpleDeep: "rgba(96, 0, 160, 0.32)",
@@ -38,9 +44,17 @@ const NEON = {
   railGray: "#9090a0",
   borderWhite: "#ffffff",
   maritimeWhite: "#ffffff",
-  hillShadow: "#180028",
-  hillHighlight: "#5c2288",
-  hillAccent: "#8b3dbf",
+  /** Raster DEM hillshade — lifted midtones, no near-black craters */
+  hillShadow: "#4a2d72",
+  hillHighlight: "#9b6ec4",
+  hillAccent: "#b894e0",
+  /** Terrain-v2 vector hillshade — paint soft purple glow, not black silhouettes */
+  reliefVectorShadow: "rgba(52, 28, 96, 0.22)",
+  reliefVectorShadowDeep: "rgba(38, 18, 72, 0.18)",
+  reliefVectorHighlight: "rgba(180, 110, 255, 0.14)",
+  reliefVectorHighlightCore: "rgba(220, 170, 255, 0.1)",
+  atmoLandcoverBloom: "rgba(120, 40, 200, 0.16)",
+  atmoLandcoverVeil: "rgba(74, 20, 128, 0.12)",
   fogColor: "rgb(40, 8, 70)",
   fogSpace: "rgb(12, 0, 26)",
 };
@@ -70,12 +84,12 @@ if (!mapboxgl.accessToken) {
     "<strong>Mapbox token required.</strong><br><br>" +
     "Create <code>.env.local</code> with <code>VITE_MAPBOX_TOKEN=YOUR_PK_TOKEN</code> and run " +
     "<code>npm run dev</code>, or visit with <code>?token=YOUR_PK_TOKEN</code> once.<br><br>" +
-    "Default style is <code>mapbox://styles/mapbox/dark-v11</code>." +
+    "Default basemap is a minimal custom neon style (see <code>mapConfig.js</code>)." +
     "</div>";
 } else {
   const map = new mapboxgl.Map({
     container: "map",
-    style: getMapStyle(),
+    style: getMapStyleRef() ?? createNeonBasemapStyle(NEON.land),
     center: mapView.center,
     zoom: mapView.zoom,
     minZoom: mapView.minZoom,
@@ -116,14 +130,6 @@ if (!mapboxgl.accessToken) {
   map.on("zoom", updateHud);
   map.on("rotate", updateHud);
   map.on("pitch", updateHud);
-
-  function findSymbolsLayerId() {
-    const layers = map.getStyle().layers || [];
-    for (let i = 0; i < layers.length; i++) {
-      if (layers[i].type === "symbol") return layers[i].id;
-    }
-    return undefined;
-  }
 
   let terrainOn = true;
 
@@ -186,178 +192,249 @@ if (!mapboxgl.accessToken) {
     }
   }
 
-  function addNeonLandBackground() {
-    const layers = map.getStyle().layers || [];
-    if (!layers.length || map.getLayer("neon-land-canvas")) return;
-    map.addLayer(
-      {
-        id: "neon-land-canvas",
-        type: "background",
-        paint: { "background-color": NEON.land },
-      },
-      layers[0].id,
-    );
+  /**
+   * Layered soft “nebula” atmosphere on landcover + urban (no reliance on template land paint).
+   */
+  function addAtmosphericLandFills() {
+    ensureStreetsSource();
+    if (!map.getLayer("neon-atmo-landcover-veil")) {
+      map.addLayer({
+        id: "neon-atmo-landcover-veil",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        paint: {
+          "fill-antialias": false,
+          "fill-color": NEON.atmoLandcoverVeil,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 2, 0.45, 6, 0.62, 12, 0.55, 16, 0.48],
+        },
+      });
+    }
+    if (!map.getLayer("neon-atmo-landcover-bloom")) {
+      map.addLayer({
+        id: "neon-atmo-landcover-bloom",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        filter: [
+          "match",
+          ["get", "class"],
+          ["wood", "scrub", "grass", "wetland", "crop"],
+          true,
+          false,
+        ],
+        paint: {
+          "fill-antialias": false,
+          "fill-color": NEON.atmoLandcoverBloom,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 3, 0.35, 10, 0.55, 15, 0.5],
+        },
+      });
+    }
+    if (!map.getLayer("neon-landcover-snow")) {
+      map.addLayer({
+        id: "neon-landcover-snow",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        filter: ["==", ["get", "class"], "snow"],
+        paint: {
+          "fill-antialias": false,
+          "fill-color": NEON.land,
+          "fill-opacity": 1,
+        },
+      });
+    }
+    if (!map.getLayer("neon-landcover-magenta")) {
+      map.addLayer({
+        id: "neon-landcover-magenta",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        filter: [
+          "match",
+          ["get", "class"],
+          ["wood", "scrub", "grass", "crop", "wetland"],
+          true,
+          false,
+        ],
+        paint: {
+          "fill-antialias": false,
+          "fill-color": NEON.magentaWood,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.85, 10, 1, 16, 0.9],
+        },
+      });
+    }
+    if (!map.getLayer("neon-landcover-nebula-indigo")) {
+      map.addLayer({
+        id: "neon-landcover-nebula-indigo",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        filter: [
+          "match",
+          ["get", "class"],
+          ["wood", "scrub", "grass", "wetland"],
+          true,
+          false,
+        ],
+        paint: {
+          "fill-color": NEON.nebulaPurpleDeep,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.65, 12, 0.95],
+        },
+      });
+    }
+    if (!map.getLayer("neon-landcover-nebula-violet")) {
+      map.addLayer({
+        id: "neon-landcover-nebula-violet",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landcover",
+        filter: ["match", ["get", "class"], ["wood", "scrub"], true, false],
+        paint: {
+          "fill-color": NEON.nebulaPurple,
+          "fill-opacity": 0.88,
+        },
+      });
+    }
+  }
+
+  function addNeonUrbanVeil() {
+    ensureStreetsSource();
+    if (!map.getLayer("neon-urban-landuse")) {
+      map.addLayer({
+        id: "neon-urban-landuse",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landuse",
+        filter: [
+          "match",
+          ["get", "class"],
+          [
+            "industrial",
+            "commercial",
+            "residential",
+            "neighbourhood",
+            "neighborhood",
+            "suburban",
+            "urban",
+          ],
+          true,
+          false,
+        ],
+        paint: {
+          "fill-color": NEON.landUrban,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.72, 11, 0.9, 16, 0.94],
+        },
+      });
+    }
+    if (!map.getLayer("neon-urban-magenta-haze")) {
+      map.addLayer({
+        id: "neon-urban-magenta-haze",
+        type: "fill",
+        source: STREETS_ID,
+        "source-layer": "landuse",
+        filter: [
+          "match",
+          ["get", "class"],
+          [
+            "industrial",
+            "commercial",
+            "residential",
+            "neighbourhood",
+            "neighborhood",
+            "suburban",
+            "urban",
+            "park",
+          ],
+          true,
+          false,
+        ],
+        paint: {
+          "fill-color": NEON.urbanVeil,
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.35, 12, 0.5, 16, 0.4],
+        },
+      });
+    }
+  }
+
+  /** Subtle DEM hillshade + terrain-v2 vector relief (soft sculpted glow). */
+  function addReliefStack() {
+    ensureTopoSource();
+    if (!map.getLayer("neon-hillshade-raster")) {
+      map.addLayer({
+        id: "neon-hillshade-raster",
+        type: "hillshade",
+        source: "mapbox-dem",
+        paint: {
+          "hillshade-shadow-color": NEON.hillShadow,
+          "hillshade-highlight-color": NEON.hillHighlight,
+          "hillshade-accent-color": NEON.hillAccent,
+          "hillshade-exaggeration": 0.16,
+          "hillshade-method": "standard",
+          "hillshade-illumination-direction": 300,
+          "hillshade-illumination-anchor": "viewport",
+        },
+      });
+    }
+    if (!map.getLayer("neon-relief-vector-shadow")) {
+      map.addLayer({
+        id: "neon-relief-vector-shadow",
+        type: "fill",
+        source: "mapbox-topo-v2",
+        "source-layer": "hillshade",
+        filter: ["==", ["get", "class"], "shadow"],
+        paint: {
+          "fill-antialias": false,
+          "fill-color": [
+            "match",
+            ["get", "level"],
+            56,
+            NEON.reliefVectorShadowDeep,
+            67,
+            NEON.reliefVectorShadow,
+            78,
+            NEON.reliefVectorShadow,
+            NEON.reliefVectorShadow,
+          ],
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.35, 10, 0.55, 14, 0.42],
+        },
+      });
+    }
+    if (!map.getLayer("neon-relief-vector-highlight")) {
+      map.addLayer({
+        id: "neon-relief-vector-highlight",
+        type: "fill",
+        source: "mapbox-topo-v2",
+        "source-layer": "hillshade",
+        filter: ["==", ["get", "class"], "highlight"],
+        paint: {
+          "fill-antialias": false,
+          "fill-color": [
+            "match",
+            ["get", "level"],
+            94,
+            NEON.reliefVectorHighlightCore,
+            90,
+            NEON.reliefVectorHighlight,
+            NEON.reliefVectorHighlight,
+          ],
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.28, 10, 0.48, 14, 0.38],
+        },
+      });
+    }
   }
 
   /**
-   * Magenta “neon foliage” wash on vegetated landcover (approx. speckled trees in ref).
+   * Cinematic stack (bottom → top): relief → atmospheric land → topography → hydro → transit → structures → framing.
+   * Layers appended in call order; no Mapbox template land/water reliance when using built-in empty style.
    */
-  function addNeonLandcoverTint(beforeId) {
-    ensureStreetsSource();
-    if (!map.getLayer("neon-landcover-magenta")) {
-      map.addLayer(
-        {
-          id: "neon-landcover-magenta",
-          type: "fill",
-          source: STREETS_ID,
-          "source-layer": "landcover",
-          filter: [
-            "match",
-            ["get", "class"],
-            ["wood", "scrub", "grass", "crop", "wetland"],
-            true,
-            false,
-          ],
-          paint: {
-            "fill-antialias": false,
-            "fill-color": NEON.magentaWood,
-            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.85, 10, 1, 16, 0.9],
-          },
-        },
-        beforeId,
-      );
-    }
-    if (!map.getLayer("neon-landcover-nebula-indigo")) {
-      map.addLayer(
-        {
-          id: "neon-landcover-nebula-indigo",
-          type: "fill",
-          source: STREETS_ID,
-          "source-layer": "landcover",
-          filter: [
-            "match",
-            ["get", "class"],
-            ["wood", "scrub", "grass", "wetland"],
-            true,
-            false,
-          ],
-          paint: {
-            "fill-color": NEON.nebulaPurpleDeep,
-            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.65, 12, 0.95],
-          },
-        },
-        beforeId,
-      );
-    }
-    if (!map.getLayer("neon-landcover-nebula-violet")) {
-      map.addLayer(
-        {
-          id: "neon-landcover-nebula-violet",
-          type: "fill",
-          source: STREETS_ID,
-          "source-layer": "landcover",
-          filter: ["match", ["get", "class"], ["wood", "scrub"], true, false],
-          paint: {
-            "fill-color": NEON.nebulaPurple,
-            "fill-opacity": 0.9,
-          },
-        },
-        beforeId,
-      );
-    }
-  }
-
-  /** Slightly brighter fill over built-up polygons (urban read vs hills). */
-  function addNeonUrbanVeil(beforeId) {
-    ensureStreetsSource();
-    if (!map.getLayer("neon-urban-landuse")) {
-      map.addLayer(
-        {
-          id: "neon-urban-landuse",
-          type: "fill",
-          source: STREETS_ID,
-          "source-layer": "landuse",
-          filter: [
-            "match",
-            ["get", "class"],
-            [
-              "industrial",
-              "commercial",
-              "residential",
-              "neighbourhood",
-              "neighborhood",
-              "suburban",
-              "urban",
-            ],
-            true,
-            false,
-          ],
-          paint: {
-            "fill-color": NEON.landUrban,
-            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.72, 11, 0.9, 16, 0.94],
-          },
-        },
-        beforeId,
-      );
-    }
-    if (!map.getLayer("neon-urban-magenta-haze")) {
-      map.addLayer(
-        {
-          id: "neon-urban-magenta-haze",
-          type: "fill",
-          source: STREETS_ID,
-          "source-layer": "landuse",
-          filter: [
-            "match",
-            ["get", "class"],
-            [
-              "industrial",
-              "commercial",
-              "residential",
-              "neighbourhood",
-              "neighborhood",
-              "suburban",
-              "urban",
-              "park",
-            ],
-            true,
-            false,
-          ],
-          paint: {
-            "fill-color": NEON.urbanVeil,
-            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.35, 12, 0.5, 16, 0.4],
-          },
-        },
-        beforeId,
-      );
-    }
-  }
-
-  function addNeonOverlayStack(beforeId) {
+  function mountNeonBasemapLayers() {
     ensureTopoSource();
     ensureStreetsSource();
 
-    if (!map.getLayer("neon-hillshade")) {
-      map.addLayer(
-        {
-          id: "neon-hillshade",
-          type: "hillshade",
-          source: "mapbox-dem",
-          paint: {
-            "hillshade-shadow-color": NEON.hillShadow,
-            "hillshade-highlight-color": NEON.hillHighlight,
-            "hillshade-accent-color": NEON.hillAccent,
-            "hillshade-exaggeration": 0.38,
-            "hillshade-illumination-direction": 300,
-            "hillshade-illumination-anchor": "viewport",
-          },
-        },
-        beforeId,
-      );
-    }
-
-    addNeonLandcoverTint(beforeId);
-    addNeonUrbanVeil(beforeId);
+    addReliefStack();
+    addAtmosphericLandFills();
+    addNeonUrbanVeil();
 
     /**
      * Terrain-v2: index lines from ~z9; dense lines from z12+. Very thin neutral strokes + low opacity (ref).
@@ -414,7 +491,6 @@ if (!mapboxgl.accessToken) {
             "line-blur": 0.28,
           },
         },
-        beforeId,
       );
     }
 
@@ -431,7 +507,6 @@ if (!mapboxgl.accessToken) {
             "fill-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.94, 8, 1, 16, 1],
           },
         },
-        beforeId,
       );
     }
 
@@ -447,7 +522,6 @@ if (!mapboxgl.accessToken) {
             "fill-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.18, 8, 0.12, 14, 0.08],
           },
         },
-        beforeId,
       );
     }
 
@@ -463,7 +537,6 @@ if (!mapboxgl.accessToken) {
             "fill-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.12, 10, 0.22, 16, 0.18],
           },
         },
-        beforeId,
       );
     }
 
@@ -482,7 +555,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.52,
           },
         },
-        beforeId,
       );
     }
 
@@ -501,7 +573,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.62,
           },
         },
-        beforeId,
       );
     }
 
@@ -520,7 +591,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.72,
           },
         },
-        beforeId,
       );
     }
 
@@ -538,7 +608,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.4,
           },
         },
-        beforeId,
       );
     }
 
@@ -558,7 +627,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 1,
           },
         },
-        beforeId,
       );
     }
 
@@ -578,7 +646,6 @@ if (!mapboxgl.accessToken) {
             "line-blur": NEON.roadBloomBlur,
           },
         },
-        beforeId,
       );
     }
 
@@ -603,7 +670,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 1,
           },
         },
-        beforeId,
       );
     }
 
@@ -629,7 +695,6 @@ if (!mapboxgl.accessToken) {
             "line-blur": 0.72,
           },
         },
-        beforeId,
       );
     }
 
@@ -654,7 +719,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.95,
           },
         },
-        beforeId,
       );
     }
 
@@ -680,7 +744,6 @@ if (!mapboxgl.accessToken) {
             "line-blur": 0.55,
           },
         },
-        beforeId,
       );
     }
 
@@ -699,7 +762,6 @@ if (!mapboxgl.accessToken) {
             "line-opacity": 0.88,
           },
         },
-        beforeId,
       );
     }
 
@@ -720,48 +782,62 @@ if (!mapboxgl.accessToken) {
             "line-dasharray": [2, 3],
           },
         },
-        beforeId,
       );
     }
 
-    if (!map.getLayer("neon-border-land")) {
+    if (!map.getLayer("neon-rail-casing")) {
       map.addLayer(
         {
-          id: "neon-border-land",
+          id: "neon-rail-casing",
           type: "line",
           source: STREETS_ID,
-          "source-layer": "admin",
-          filter: ["!", ["boolean", ["get", "maritime"], false]],
+          "source-layer": "road",
+          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": NEON.borderWhite,
-            "line-width": ["interpolate", ["linear"], ["zoom"], 2, 0.35, 6, 0.65, 12, 0.95, 22, 1.15],
-            "line-opacity": ["interpolate", ["linear"], ["zoom"], 2, 0, 3, 0.88, 22, 1],
-            "line-dasharray": [3, 2],
+            "line-color": NEON.roadCasing,
+            "line-width": expWidth(12, 22, 0.52, 2.55, 1.26),
+            "line-opacity": 1,
           },
         },
-        beforeId,
       );
     }
 
-    /* White dashed maritime — sharp, no blur */
-    if (!map.getLayer("neon-maritime-dash")) {
+    if (!map.getLayer("neon-rail")) {
       map.addLayer(
         {
-          id: "neon-maritime-dash",
+          id: "neon-rail",
           type: "line",
           source: STREETS_ID,
-          "source-layer": "admin",
-          filter: ["boolean", ["get", "maritime"], false],
+          "source-layer": "road",
+          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": NEON.maritimeWhite,
-            "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.4, 10, 0.75, 16, 1],
-            "line-opacity": 0.72,
-            "line-dasharray": [2, 3],
+            "line-color": NEON.railGray,
+            "line-width": expWidth(12, 22, 0.32, 1.92, 1.26),
+            "line-opacity": 1,
+            "line-blur": 0.55,
           },
         },
-        beforeId,
+      );
+    }
+
+    if (!map.getLayer("neon-rail-ties")) {
+      map.addLayer(
+        {
+          id: "neon-rail-ties",
+          type: "line",
+          source: STREETS_ID,
+          "source-layer": "road",
+          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": NEON.railGray,
+            "line-width": expWidth(12, 22, 0.3, 1.75, 1.26),
+            "line-opacity": 0.48,
+            "line-dasharray": [0.3, 2.2],
+          },
+        },
       );
     }
 
@@ -789,7 +865,6 @@ if (!mapboxgl.accessToken) {
             "fill-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0, 13, 0.82, 22, 0.92],
           },
         },
-        beforeId,
       );
     }
 
@@ -807,72 +882,49 @@ if (!mapboxgl.accessToken) {
             "line-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0, 13, 0.88, 22, 0.95],
           },
         },
-        beforeId,
       );
     }
 
-    if (!map.getLayer("neon-rail-casing")) {
+    if (!map.getLayer("neon-border-land")) {
       map.addLayer(
         {
-          id: "neon-rail-casing",
+          id: "neon-border-land",
           type: "line",
           source: STREETS_ID,
-          "source-layer": "road",
-          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
+          "source-layer": "admin",
+          filter: ["!", ["boolean", ["get", "maritime"], false]],
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": NEON.roadCasing,
-            "line-width": expWidth(12, 22, 0.52, 2.55, 1.26),
-            "line-opacity": 1,
+            "line-color": NEON.borderWhite,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 2, 0.35, 6, 0.65, 12, 0.95, 22, 1.15],
+            "line-opacity": ["interpolate", ["linear"], ["zoom"], 2, 0, 3, 0.88, 22, 1],
+            "line-dasharray": [3, 2],
           },
         },
-        beforeId,
       );
     }
 
-    if (!map.getLayer("neon-rail")) {
+    if (!map.getLayer("neon-maritime-dash")) {
       map.addLayer(
         {
-          id: "neon-rail",
+          id: "neon-maritime-dash",
           type: "line",
           source: STREETS_ID,
-          "source-layer": "road",
-          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
+          "source-layer": "admin",
+          filter: ["boolean", ["get", "maritime"], false],
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": NEON.railGray,
-            "line-width": expWidth(12, 22, 0.32, 1.92, 1.26),
-            "line-opacity": 1,
-            "line-blur": 0.55,
+            "line-color": NEON.maritimeWhite,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.4, 10, 0.75, 16, 1],
+            "line-opacity": 0.72,
+            "line-dasharray": [2, 3],
           },
         },
-        beforeId,
-      );
-    }
-
-    if (!map.getLayer("neon-rail-ties")) {
-      map.addLayer(
-        {
-          id: "neon-rail-ties",
-          type: "line",
-          source: STREETS_ID,
-          "source-layer": "road",
-          filter: ["match", ["get", "class"], ["major_rail", "minor_rail"], true, false],
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: {
-            "line-color": NEON.railGray,
-            "line-width": expWidth(12, 22, 0.3, 1.75, 1.26),
-            "line-opacity": 0.48,
-            "line-dasharray": [0.3, 2.2],
-          },
-        },
-        beforeId,
       );
     }
   }
 
   map.once("idle", () => {
-    const beforeId = findSymbolsLayerId();
     try {
       if (!map.getSource("mapbox-dem")) {
         map.addSource("mapbox-dem", {
@@ -882,11 +934,10 @@ if (!mapboxgl.accessToken) {
           maxzoom: 14,
         });
       }
-      addNeonLandBackground();
-      addNeonOverlayStack(beforeId);
+      mountNeonBasemapLayers();
       applyNeonFog();
     } catch (e) {
-      console.warn("Neon overlay stack:", e);
+      console.warn("Neon basemap stack:", e);
     }
     setTerrain(true);
   });

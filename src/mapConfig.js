@@ -1,6 +1,7 @@
 /**
  * Token: .env.local → VITE_MAPBOX_TOKEN, then ?token=..., then localStorage `mapbox_token`.
- * Style: VITE_MAPBOX_STYLE or Mapbox Dark v11.
+ * Basemap: defaults to a minimal custom style (neon purple); set VITE_MAPBOX_STYLE to override
+ *          with a Mapbox style URL or hosted JSON.
  */
 export function resolveMapboxToken() {
   const fromEnv = import.meta.env.VITE_MAPBOX_TOKEN || "";
@@ -19,10 +20,35 @@ export function resolveMapboxToken() {
   return fromEnv;
 }
 
-const defaultStyle = "mapbox://styles/mapbox/dark-v11";
+/** Must match `NEON.land` in main when using the built-in basemap. */
+export const DEFAULT_NEON_LAND = "#2e004f";
 
-export function getMapStyle() {
-  return import.meta.env.VITE_MAPBOX_STYLE || defaultStyle;
+/**
+ * Minimal Mapbox GL style: one background layer only. All land/water/roads are added in main.js.
+ */
+export function createNeonBasemapStyle(backgroundColor = DEFAULT_NEON_LAND) {
+  return {
+    version: 8,
+    name: "Neon basemap (custom)",
+    glyphs: "mapbox://fonts/mapbox/{fontstack}/{range}.pbf",
+    sources: {},
+    layers: [
+      {
+        id: "neon-global-bg",
+        type: "background",
+        paint: { "background-color": backgroundColor },
+      },
+    ],
+  };
+}
+
+/**
+ * @returns {string | object} Mapbox URL/JSON string, or null to use inline basemap from main.
+ */
+export function getMapStyleRef() {
+  const s = import.meta.env.VITE_MAPBOX_STYLE?.trim?.();
+  if (s) return s;
+  return null;
 }
 
 export const mapView = {
