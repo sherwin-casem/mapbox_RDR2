@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Map — Mapbox Dark v11</title>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <aside class="hud" aria-label="Map debug">
+      <dl class="hud__readouts">
+        <div>
+          <dt>Zoom</dt>
+          <dd id="readout-zoom">—</dd>
+        </div>
+        <div>
+          <dt>Pitch</dt>
+          <dd id="readout-pitch">—</dd>
+        </div>
+        <div>
+          <dt>Bearing</dt>
+          <dd id="readout-bearing">—</dd>
+        </div>
+      </dl>
+      <p class="hud__hint">
+        Scroll to zoom · Right-drag or Ctrl+drag to tilt/rotate · Double-click zoom
+      </p>
+    </aside>
+
+    <button type="button" id="btn-terrain" class="fab" aria-pressed="true">
+      3D terrain
+    </button>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
